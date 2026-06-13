@@ -415,7 +415,7 @@ impl LauncherApp {
 
         ui.separator();
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Game location:");
             let shown = self
                 .resolved_game_location()
