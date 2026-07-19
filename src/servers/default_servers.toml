@@ -13,3 +13,13 @@ login_url = "http://127.0.0.1:54993/login"
 name = "Project Meteor"
 address = "127.0.0.1"
 login_url = "http://127.0.0.1:8080/login.php"
+
+# The AetherXIV 1.3 docker stack in the sibling AetherXIV-EchoGate repo
+# (its main working line). Lobby on the stock 54994 port; the PHP web
+# container serves the login page on 8080. The page answers with the
+# retail x-sqexauth element, which the login WebView bridges to
+# ffxiv://login_success itself, so the normal Login flow works.
+[[server]]
+name = "AetherXIV 1.3 (Docker Local)"
+address = "127.0.0.1"
+login_url = "http://127.0.0.1:8080/login/index.php"

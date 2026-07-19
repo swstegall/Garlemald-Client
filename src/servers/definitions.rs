@@ -16,7 +16,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -32,9 +31,12 @@ pub struct ServerDefinition {
     pub login_url: String,
 }
 
+/// Order-preserving: `iter()` yields entries in the order they appear in the
+/// TOML file, which is also the dropdown order and the fresh-install default
+/// (first entry).
 #[derive(Debug, Clone, Default)]
 pub struct ServerDefinitions {
-    servers: BTreeMap<String, ServerDefinition>,
+    servers: Vec<ServerDefinition>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -56,21 +58,27 @@ impl ServerDefinitions {
 
     pub fn parse(toml_text: &str) -> Result<Self> {
         let parsed: ServersFile = toml::from_str(toml_text).context("parsing servers TOML")?;
-        let mut servers: BTreeMap<String, ServerDefinition> = BTreeMap::new();
+        let mut servers: Vec<ServerDefinition> = Vec::new();
         for server in parsed.servers {
-            if !server.name.is_empty() {
-                servers.insert(server.name.clone(), server);
+            if server.name.is_empty() {
+                continue;
+            }
+            // Duplicate names keep the first occurrence's position but take
+            // the later definition, matching the previous map semantics.
+            match servers.iter_mut().find(|s| s.name == server.name) {
+                Some(existing) => *existing = server,
+                None => servers.push(server),
             }
         }
         Ok(Self { servers })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ServerDefinition> {
-        self.servers.values()
+        self.servers.iter()
     }
 
     pub fn get(&self, name: &str) -> Option<&ServerDefinition> {
-        self.servers.get(name)
+        self.servers.iter().find(|s| s.name == name)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -124,5 +132,33 @@ login_url = "https://b/login"
     fn empty_document_is_empty_set() {
         let defs = ServerDefinitions::parse("").unwrap();
         assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn iteration_preserves_file_order() {
+        let toml_text = r#"
+[[server]]
+name = "Zeta"
+address = "z.example"
+login_url = "https://z/login"
+
+[[server]]
+name = "Alpha"
+address = "a.example"
+login_url = "https://a/login"
+"#;
+        let defs = ServerDefinitions::parse(toml_text).unwrap();
+        let names: Vec<&str> = defs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Zeta", "Alpha"]);
+    }
+
+    #[test]
+    fn aetherxiv_13_entry_points_at_docker_login() {
+        let defs = ServerDefinitions::load_default().unwrap();
+        let entry = defs
+            .get("AetherXIV 1.3 (Docker Local)")
+            .expect("AetherXIV 1.3 present");
+        assert_eq!(entry.address, "127.0.0.1");
+        assert_eq!(entry.login_url, "http://127.0.0.1:8080/login/index.php");
     }
 }
