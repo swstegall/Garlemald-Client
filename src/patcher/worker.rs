@@ -29,19 +29,17 @@ use std::thread::{self, JoinHandle};
 use crc32fast::Hasher as Crc32Hasher;
 use parking_lot::Mutex;
 
-use super::downloader::{DownloadProgress, DownloadResult, Downloader};
 use super::extract::{ExtractError, extract_manifest_patches};
-use super::manifest::{PATCH_MANIFEST, PATCH_URL_BASE, PatchEntry, total_bytes};
+use super::manifest::{PATCH_MANIFEST, PatchEntry, total_bytes};
 use super::process::{PatchPlan, write_version_files};
+use super::progress::TransferProgress;
 
-/// Where the worker should get the patch files from. `Download` fetches the
-/// manifest from the S3 bucket; `Local` trusts a pre-existing directory
-/// (typically another install's patch cache) and just validates + applies it.
+/// Where the worker should get the patch files from: either a local patch
+/// directory (typically another install's patch cache, or one populated by
+/// "Install from Local Patches...") or a torrented archive already unpacked
+/// on disk, which just needs validating + applying.
 #[derive(Debug)]
 pub enum PatchSource {
-    Download {
-        download_dir: PathBuf,
-    },
     Local {
         source_dir: PathBuf,
     },
@@ -57,7 +55,6 @@ pub enum PatchSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Starting = 0,
-    Downloading = 1,
     Patching = 2,
     Done = 3,
     Error = 4,
@@ -69,7 +66,6 @@ pub enum Phase {
 impl Phase {
     fn from_u8(value: u8) -> Self {
         match value {
-            1 => Phase::Downloading,
             2 => Phase::Patching,
             3 => Phase::Done,
             4 => Phase::Error,
@@ -85,28 +81,28 @@ impl Phase {
 /// atomics so the UI can poll them lock-free each frame; the string fields
 /// (error + warnings) are protected by a lightweight mutex.
 pub struct PatcherShared {
-    pub download: DownloadProgress,
-    pub download_idx: AtomicUsize,
+    pub transfer: TransferProgress,
+    pub file_idx: AtomicUsize,
     pub previous_completed_bytes: AtomicU64,
     pub patch_idx: AtomicUsize,
     phase: AtomicU8,
     error_message: Mutex<Option<String>>,
     warnings: Mutex<Vec<String>>,
-    pub total_download_bytes: u64,
+    pub total_source_bytes: u64,
     pub total_patches: usize,
 }
 
 impl PatcherShared {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            download: DownloadProgress::new(),
-            download_idx: AtomicUsize::new(0),
+            transfer: TransferProgress::new(),
+            file_idx: AtomicUsize::new(0),
             previous_completed_bytes: AtomicU64::new(0),
             patch_idx: AtomicUsize::new(0),
             phase: AtomicU8::new(Phase::Starting as u8),
             error_message: Mutex::new(None),
             warnings: Mutex::new(Vec::new()),
-            total_download_bytes: total_bytes(),
+            total_source_bytes: total_bytes(),
             total_patches: PATCH_MANIFEST.len(),
         })
     }
@@ -124,11 +120,11 @@ impl PatcherShared {
     }
 
     pub fn request_cancel(&self) {
-        self.download.cancel();
+        self.transfer.cancel();
     }
 
     pub fn is_cancel_requested(&self) -> bool {
-        self.download.is_cancelled()
+        self.transfer.is_cancelled()
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -151,9 +147,10 @@ impl PatcherShared {
     }
 }
 
-/// Spawns the download+apply (or validate+apply) worker. The returned
-/// [`JoinHandle`] lets the UI detach or wait on the worker; typical use is to
-/// let it run and poll the shared state for updates.
+/// Spawns the validate+apply worker (extracting a torrented archive first,
+/// when the source is `LocalZip`). The returned [`JoinHandle`] lets the UI
+/// detach or wait on the worker; typical use is to let it run and poll the
+/// shared state for updates.
 pub fn start_patcher_worker(
     shared: Arc<PatcherShared>,
     game_dir: PathBuf,
@@ -177,12 +174,6 @@ fn run_patcher(shared: Arc<PatcherShared>, game_dir: PathBuf, source: PatchSourc
     };
 
     let plan = match source {
-        PatchSource::Download { download_dir } => {
-            match run_download_phase(&shared, &download_dir) {
-                Some(plan) => plan,
-                None => return,
-            }
-        }
         PatchSource::Local { source_dir } => match run_validate_phase(&shared, &source_dir) {
             Some(plan) => plan,
             None => return,
@@ -295,67 +286,16 @@ fn extract_and_verify(
     // The extract pass already consumed the full total; restart the
     // counters so the Validating pass's progress bar starts clean.
     shared.previous_completed_bytes.store(0, Ordering::Release);
-    shared.download.bytes_downloaded.store(0, Ordering::SeqCst);
+    shared.transfer.bytes_transferred.store(0, Ordering::SeqCst);
 
     run_validate_phase(shared, &staging)
 }
 
-fn run_download_phase(shared: &Arc<PatcherShared>, download_dir: &Path) -> Option<PatchPlan> {
-    shared.set_phase(Phase::Downloading);
-
-    let downloader = Downloader::with_progress(shared.download.clone());
-
-    for (idx, entry) in PATCH_MANIFEST.iter().enumerate() {
-        if shared.is_cancel_requested() {
-            shared.set_phase(Phase::Cancelled);
-            return None;
-        }
-        shared.download_idx.store(idx, Ordering::Release);
-        let url = format!("{PATCH_URL_BASE}{}", entry.path);
-        let dst = download_dir.join(entry.path);
-
-        let result = downloader.download(&url, &dst, entry.size, entry.crc32);
-        match result {
-            Ok(DownloadResult::Success) | Ok(DownloadResult::AlreadyUpToDate) => {
-                shared
-                    .previous_completed_bytes
-                    .fetch_add(entry.size, Ordering::Release);
-            }
-            Ok(DownloadResult::Cancelled) => {
-                shared.set_phase(Phase::Cancelled);
-                return None;
-            }
-            Ok(DownloadResult::BadChecksum) => {
-                shared.set_error(format!("Download failed: bad checksum for {}", entry.path));
-                return None;
-            }
-            Ok(DownloadResult::BadFileSize) => {
-                shared.set_error(format!("Download failed: bad file size for {}", entry.path));
-                return None;
-            }
-            Ok(DownloadResult::Network) => {
-                shared.set_error(format!("Download failed: network error on {}", entry.path));
-                return None;
-            }
-            Err(e) => {
-                shared.set_error(format!("Download error on {}: {e}", entry.path));
-                return None;
-            }
-        }
-    }
-
-    match PatchPlan::from_download_dir(download_dir) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            shared.set_error(format!("Failed to plan patches: {e}"));
-            None
-        }
-    }
-}
-
-/// Local-install variant of the pre-apply phase: resolves each manifest entry
-/// to a file in `source_dir`, verifies size + CRC32, and reports progress via
-/// the same download progress atomics so the UI's existing bar can show it.
+/// Pre-apply validation phase: resolves each manifest entry to a file in
+/// `source_dir`, verifies size + CRC32, and reports progress via the shared
+/// progress atomics so the UI's existing bar can show it. Used directly for
+/// a local patch directory, and via [`extract_and_verify`] for a torrented
+/// archive already unpacked into a staging directory.
 fn run_validate_phase(shared: &Arc<PatcherShared>, source_dir: &Path) -> Option<PatchPlan> {
     shared.set_phase(Phase::Validating);
 
@@ -377,10 +317,10 @@ fn run_validate_phase(shared: &Arc<PatcherShared>, source_dir: &Path) -> Option<
             shared.set_phase(Phase::Cancelled);
             return None;
         }
-        shared.download_idx.store(idx, Ordering::Release);
+        shared.file_idx.store(idx, Ordering::Release);
         // Reset the per-file counter so the UI shows "validated/size" for the
         // current file while `previous_completed_bytes` accumulates the rest.
-        shared.download.bytes_downloaded.store(0, Ordering::SeqCst);
+        shared.transfer.bytes_transferred.store(0, Ordering::SeqCst);
 
         match validate_file(path, entry.size, entry.crc32, shared) {
             Ok(true) => {
@@ -478,8 +418,8 @@ fn validate_file(
         }
         hasher.update(&buf[..n]);
         shared
-            .download
-            .bytes_downloaded
+            .transfer
+            .bytes_transferred
             .fetch_add(n as u64, Ordering::Relaxed);
     }
 
@@ -497,7 +437,6 @@ mod tests {
     fn phase_survives_a_u8_round_trip() {
         for phase in [
             Phase::Starting,
-            Phase::Downloading,
             Phase::Patching,
             Phase::Done,
             Phase::Error,

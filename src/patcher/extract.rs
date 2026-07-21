@@ -24,9 +24,9 @@
 //! earlier extraction, or a hand-assembled cache) or still needs
 //! unpacking from the archive. [`extract_manifest_patches`] does the
 //! unpacking into a scratch staging directory, streaming through the
-//! same [`IO_CHUNK`] buffer and progress counters the download and
-//! validate passes use, so [`super::worker`] can drive it with the same
-//! UI progress bar.
+//! same [`IO_CHUNK`] buffer and progress counters the validate pass
+//! uses, so [`super::worker`] can drive it with the same UI progress
+//! bar.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -38,8 +38,8 @@ use super::manifest::PATCH_MANIFEST;
 use super::worker::PatcherShared;
 
 /// Byte size of the read/write buffer used while streaming a zip entry
-/// to disk; matches the chunk size the downloader and validate passes
-/// use so progress reporting stays consistent across phases.
+/// to disk; matches the validate pass's chunk size so progress
+/// reporting stays consistent across phases.
 const IO_CHUNK: usize = 0x10000;
 
 /// Filename of a manifest entry's path, ignoring any directory
@@ -257,10 +257,10 @@ pub fn extract_manifest_patches(
         if shared.is_cancel_requested() {
             return Err(ExtractError::Cancelled);
         }
-        shared.download_idx.store(idx, Ordering::Release);
+        shared.file_idx.store(idx, Ordering::Release);
         // Restart the per-file counter; previous_completed_bytes carries
         // the running total of files already staged.
-        shared.download.bytes_downloaded.store(0, Ordering::SeqCst);
+        shared.transfer.bytes_transferred.store(0, Ordering::SeqCst);
 
         let leaf = leaf_name(entry.path);
         log::info!(
@@ -309,8 +309,8 @@ fn extract_one<R: Read + io::Seek>(
         sink.write_all(&buf[..read])
             .map_err(|e| ExtractError::io("writing a staged patch file", e))?;
         shared
-            .download
-            .bytes_downloaded
+            .transfer
+            .bytes_transferred
             .fetch_add(read as u64, Ordering::Relaxed);
     }
     Ok(())

@@ -25,6 +25,7 @@ use eframe::egui;
 use crate::app::developer_window::{DeveloperModal, DeveloperOutcome, VERBOSE_WINE_DEBUG};
 use crate::app::patcher_window::PatcherScreen;
 use crate::app::settings_window::{SettingsModal, SettingsOutcome};
+use crate::app::theme;
 use crate::config::{
     Preferences, bundled_config_path, default_torrent_storage_dir, preferences_file_path,
     torrent_session_dir,
@@ -32,8 +33,7 @@ use crate::config::{
 use crate::install_check::{self, InstallState, InstallStatus};
 use crate::launcher::GameLaunchRequest;
 use crate::login::{LoginOutcome, LoginTask};
-use crate::patcher::manifest::total_bytes;
-use crate::patcher::{PatchPayload, PatchSource, check_game_version, find_patch_payload};
+use crate::patcher::{PatchPayload, PatchSource, Phase, check_game_version, find_patch_payload};
 use crate::platform::{Platform, current as current_platform};
 use crate::servers::ServerDefinitions;
 use crate::torrent::{TORRENT_ENDPOINT, TorrentService, TorrentServiceError, TorrentState};
@@ -83,16 +83,11 @@ struct LauncherApp {
     developer_modal: Option<DeveloperModal>,
     login_task: Option<LoginTask>,
     outdated_prompt_open: bool,
-    download_confirm: Option<DownloadConfirmState>,
     last_message: Option<(MessageKind, String)>,
     torrent: TorrentService,
     install_status: InstallStatus,
     last_install_check: Instant,
     torrent_apply_attempted: bool,
-}
-
-struct DownloadConfirmState {
-    download_dir: PathBuf,
 }
 
 impl LauncherApp {
@@ -169,7 +164,6 @@ impl LauncherApp {
             developer_modal: None,
             login_task: None,
             outdated_prompt_open: false,
-            download_confirm: None,
             last_message: None,
             torrent,
             install_status,
@@ -191,16 +185,6 @@ impl LauncherApp {
             return false;
         }
         !check_game_version(&path)
-    }
-
-    /// Default target for the HTTP patch download: an `ffxiv_patches/`
-    /// subfolder of the shared patch-storage root, the same top-level
-    /// folder name the torrent payload creates - both transports land
-    /// under the one patches directory the user configures in settings.
-    fn default_download_dir(&self) -> PathBuf {
-        self.resolved_patch_storage_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("ffxiv_patches")
     }
 
     fn resolved_login_url(&self) -> Option<String> {
@@ -303,41 +287,6 @@ impl LauncherApp {
         self.last_message = Some((MessageKind::Error, msg.into()));
     }
 
-    /// Opens the download-confirmation modal; the actual patcher doesn't
-    /// start until the user clicks "Continue" in that modal.
-    fn start_update(&mut self) {
-        let Some(game_dir) = self.resolved_game_location() else {
-            self.set_error("No game location set. Use Game Settings to pick one.");
-            return;
-        };
-        let platform = current_platform();
-        if !platform.is_valid_game_location(&game_dir) {
-            self.set_error(format!(
-                "'{}' doesn't look like an FFXIV install (no ffxivboot.exe).",
-                game_dir.display()
-            ));
-            return;
-        }
-        self.download_confirm = Some(DownloadConfirmState {
-            download_dir: self.default_download_dir(),
-        });
-    }
-
-    fn kick_off_patcher(&mut self, download_dir: PathBuf) {
-        let Some(game_dir) = self.resolved_game_location() else {
-            self.set_error("No game location set.");
-            return;
-        };
-        // Deliberately NOT persisted into patch_download_dir: that
-        // preference is the torrent storage root the Settings modal owns,
-        // and silently repointing it at a one-off HTTP download location
-        // would redirect the multi-gigabyte seeding payload with it.
-        self.screen = Screen::Patcher(PatcherScreen::start(
-            game_dir,
-            PatchSource::Download { download_dir },
-        ));
-    }
-
     /// Kicks off the patcher against a resolved local patch source (either a
     /// patch-cache directory or the extracted/zipped torrent payload).
     /// Validates sizes + CRCs before applying.
@@ -403,9 +352,9 @@ impl LauncherApp {
             .start_download(TORRENT_ENDPOINT.to_string(), dir)
         {
             Ok(()) => self.set_info("Fetching the patch torrent..."),
-            Err(TorrentServiceError::Busy) => {
-                self.set_info("A torrent download is already in progress.")
-            }
+            Err(TorrentServiceError::Busy) => self.set_info(
+                "A patch download is already running; patches apply automatically when it finishes.",
+            ),
         }
     }
 
@@ -508,14 +457,14 @@ impl LauncherApp {
                 }
             }
             TorrentState::Complete => {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, "Patch archive downloaded.");
+                ui.colored_label(theme::success(ui.visuals()), "Patch archive downloaded.");
                 if !self.install_ready() && ui.button("Apply Downloaded Patches").clicked() {
                     self.kick_off_torrent_apply();
                 }
             }
             TorrentState::Seeding => {
                 ui.colored_label(
-                    egui::Color32::LIGHT_GREEN,
+                    theme::success(ui.visuals()),
                     format!(
                         "Seeding - {} peers - {} uploaded",
                         snapshot.peers,
@@ -527,7 +476,7 @@ impl LauncherApp {
                 }
             }
             TorrentState::Stopped => {
-                ui.colored_label(egui::Color32::YELLOW, "Torrent download stopped.");
+                ui.colored_label(theme::warn(ui.visuals()), "Torrent download stopped.");
                 if ui.button("Resume Download").clicked() {
                     self.start_torrent_download();
                 }
@@ -537,7 +486,7 @@ impl LauncherApp {
                     .error
                     .clone()
                     .unwrap_or_else(|| "Torrent download failed.".to_string());
-                ui.colored_label(egui::Color32::LIGHT_RED, message);
+                ui.colored_label(theme::error(ui.visuals()), message);
                 if ui.button("Retry Download").clicked() {
                     self.start_torrent_download();
                 }
@@ -712,16 +661,15 @@ impl LauncherApp {
             // game.ver from disk: with the torrent repaint cadence this
             // renders at ~2 Hz for as long as the launcher seeds.
             let up_to_date = self.install_ready();
-            let (label, color) = if up_to_date {
-                (
-                    "game.ver matches expected version",
-                    egui::Color32::LIGHT_GREEN,
-                )
+            let label = if up_to_date {
+                "game.ver matches expected version"
             } else {
-                (
-                    "install not fully patched — use Check for Updates",
-                    egui::Color32::YELLOW,
-                )
+                "install not fully patched"
+            };
+            let color = if up_to_date {
+                theme::success(ui.visuals())
+            } else {
+                theme::warn(ui.visuals())
             };
             ui.colored_label(color, label);
         }
@@ -729,9 +677,6 @@ impl LauncherApp {
         ui.separator();
 
         ui.horizontal(|ui| {
-            if ui.button("Check for Updates").clicked() {
-                self.start_update();
-            }
             if ui.button("Install from Local Patches…").clicked() {
                 self.start_local_install();
             }
@@ -756,7 +701,7 @@ impl LauncherApp {
             }
         });
         if !self.install_ready() {
-            ui.colored_label(egui::Color32::YELLOW, self.install_gate_message());
+            ui.colored_label(theme::warn(ui.visuals()), self.install_gate_message());
         }
 
         self.render_torrent_section(ui);
@@ -779,8 +724,8 @@ impl LauncherApp {
         ui.separator();
         if let Some((kind, msg)) = self.last_message.clone() {
             let color = match kind {
-                MessageKind::Info => egui::Color32::LIGHT_BLUE,
-                MessageKind::Error => egui::Color32::LIGHT_RED,
+                MessageKind::Info => theme::info(ui.visuals()),
+                MessageKind::Error => theme::error(ui.visuals()),
             };
             ui.colored_label(color, msg);
         }
@@ -847,7 +792,6 @@ impl LauncherApp {
         }
 
         self.render_outdated_prompt(ctx);
-        self.render_download_confirm(ctx);
     }
 
     fn render_outdated_prompt(&mut self, ctx: &egui::Context) {
@@ -863,12 +807,12 @@ impl LauncherApp {
             .movable(true)
             .open(&mut window_open)
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "Your game install appears to be out of date.\nWould you like to update it to version {FFXIV_GAME_VERSION}?"
-                ));
+                ui.label(
+                    "Your game install appears to be out of date.\nDownload the 1.23b patches via BitTorrent (about 6 GB) and apply them automatically?",
+                );
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Update").clicked() {
+                    if ui.button("Download and Update").clicked() {
                         accept = true;
                     }
                     if ui.button("Not now").clicked() {
@@ -881,62 +825,7 @@ impl LauncherApp {
         }
         if accept {
             self.outdated_prompt_open = false;
-            self.start_update();
-        }
-    }
-
-    fn render_download_confirm(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.download_confirm.as_mut() else {
-            return;
-        };
-        let mut window_open = true;
-        let mut proceed = false;
-        let mut choose_dir = false;
-        let mut cancel = false;
-        let gigabytes = total_bytes() as f64 / 1_000_000_000.0;
-        egui::Window::new("Patch Download Location")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut window_open)
-            .show(ctx, |ui| {
-                ui.label(format!(
-                    "The launcher needs to download approximately {gigabytes:.2} GB of data\n\
-                     to update the game. Files will be stored at:"
-                ));
-                ui.monospace(state.download_dir.display().to_string());
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("Continue").clicked() {
-                        proceed = true;
-                    }
-                    if ui.button("Choose different location…").clicked() {
-                        choose_dir = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-
-        if choose_dir {
-            if let Some(folder) = rfd::FileDialog::new()
-                .set_title("Specify patch download location")
-                .pick_folder()
-            {
-                state.download_dir = folder;
-            }
-            return;
-        }
-
-        if !window_open || cancel {
-            self.download_confirm = None;
-            return;
-        }
-
-        if proceed {
-            let dir = state.download_dir.clone();
-            self.download_confirm = None;
-            self.kick_off_patcher(dir);
+            self.start_torrent_download();
         }
     }
 }
@@ -954,9 +843,7 @@ impl eframe::App for LauncherApp {
         // still needs patching, kick off the apply without waiting for the
         // user to notice and click through. Mirrors bahamut-launcher's
         // maybeAutoChainPatch install gate.
-        let no_modal_open = self.settings_modal.is_none()
-            && self.developer_modal.is_none()
-            && self.download_confirm.is_none();
+        let no_modal_open = self.settings_modal.is_none() && self.developer_modal.is_none();
         if on_main_screen
             && no_modal_open
             && !self.torrent_apply_attempted
@@ -1009,8 +896,21 @@ impl eframe::App for LauncherApp {
         }
 
         if dismiss_patcher {
+            // The Close button is reachable from every terminal phase, so
+            // the farewell message must match how the run actually ended.
+            let (phase, error) = match &self.screen {
+                Screen::Patcher(screen) => (screen.phase(), screen.error()),
+                Screen::Main => (Phase::Done, None),
+            };
             self.screen = Screen::Main;
-            self.set_info("Update complete.");
+            match phase {
+                Phase::Error => {
+                    let detail = error.unwrap_or_else(|| "see the log for details".to_string());
+                    self.set_error(format!("Update failed: {detail}"));
+                }
+                Phase::Cancelled => self.set_info("Update cancelled."),
+                _ => self.set_info("Update complete."),
+            }
             self.refresh_install_status();
         }
     }

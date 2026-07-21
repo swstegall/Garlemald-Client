@@ -17,9 +17,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Port of `PatchProcess.cpp` helpers: version-file checks and post-patch
-//! version-file writes. The actual driver loop (download N files, then apply
-//! them in sorted order) lives in the UI layer since it needs to report
-//! progress to the user.
+//! version-file writes. The actual driver loop (validate the patch set,
+//! then apply it in sorted order) lives in `super::worker` since it needs
+//! to report progress to the user.
 
 use std::collections::HashMap;
 use std::fs;
@@ -30,23 +30,12 @@ use anyhow::{Context, Result, anyhow};
 use crate::version::{FFXIV_BOOT_VERSION, FFXIV_GAME_VERSION};
 
 pub struct PatchPlan {
-    /// Absolute paths to the downloaded patch files, in application order
+    /// Absolute paths to the resolved patch files, in application order
     /// (sorted by filename leaf so chronologically-later patches apply later).
     pub patches_in_order: Vec<PathBuf>,
 }
 
 impl PatchPlan {
-    pub fn from_download_dir(download_dir: &Path) -> Result<Self> {
-        let mut paths = Vec::new();
-        for entry in crate::patcher::manifest::PATCH_MANIFEST {
-            paths.push(download_dir.join(entry.path));
-        }
-        paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        Ok(Self {
-            patches_in_order: paths,
-        })
-    }
-
     /// Builds a plan from a user-chosen local directory by scanning
     /// recursively for each manifest entry's leaf filename. Missing files
     /// return an error listing what was not found; the caller is expected to
@@ -170,10 +159,16 @@ mod tests {
         assert!(tmp.path().join("game.ver").exists());
     }
 
+    // Guards the sequential-apply invariant: patches always apply in
+    // filename-leaf order, oldest patch first.
     #[test]
     fn plan_sorts_by_leaf_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let plan = PatchPlan::from_download_dir(tmp.path()).unwrap();
+        for entry in crate::patcher::manifest::PATCH_MANIFEST {
+            let leaf = entry.path.rsplit('/').next().unwrap();
+            fs::write(tmp.path().join(leaf), b"").unwrap();
+        }
+        let plan = PatchPlan::from_local_source(tmp.path()).unwrap();
         let leaves: Vec<_> = plan
             .patches_in_order
             .iter()
@@ -182,6 +177,7 @@ mod tests {
         let mut sorted = leaves.clone();
         sorted.sort();
         assert_eq!(leaves, sorted);
+        assert_eq!(leaves.len(), crate::patcher::manifest::PATCH_MANIFEST.len());
     }
 
     #[test]

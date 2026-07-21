@@ -62,7 +62,7 @@ Single crate, `src/`:
 |-----------------|----------------------------------------------------------------------------------|
 | `app/`          | `eframe`/`egui` GUI — `launcher_window`, `patcher_window`, `settings_window`, `developer_window` |
 | `servers/`      | server registry (`ServerDefinition { name, address, login_url }`; `default_servers.toml`) |
-| `patcher/`      | patch download (`ureq`) + apply worker + `manifest.rs` (`PATCH_URL_BASE`) + torrented-archive extraction (`extract.rs`) |
+| `patcher/`      | apply worker + `manifest.rs` sizes/CRCs + torrented-archive extraction (`extract.rs`) |
 | `patch_format/` | the ZiPatch format (decompress + apply file deltas)                               |
 | `login/`        | the `--login-webview` subprocess + the `ffxiv://login_success?sessionId=` handshake |
 | `crypto/`       | Blowfish encryption of the game launch arguments (`build_launch_arguments`)       |

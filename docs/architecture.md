@@ -28,10 +28,10 @@ From cold start to in-game, the launcher runs this pipeline:
   └──────────┘   └──────────────────┘   │  (CRC32)     │   │  sessionId=…)  │   │   linux)         │ │
                           ▲             └──────────────┘   └───────┬───────┘   └────────┬─────────┘ │
                           │                  ▲                     │                    │           │
-                          │            S3 patch host         server loginUrl           │           │
+                          │        patch torrent swarm       server loginUrl           │           │
                           └──────────────────┼─────────────────────┼───────────────────┼───────────┘
                                              │                     │                    │
-                              ffxivpatches.s3.amazonaws.com   web-server :54993    ffxivgame.exe
+                                      BitTorrent swarm        web-server :54993    ffxivgame.exe
                                                                                         │
                                                             game connects to the server ▼
                                                        lobby :54994 · world :54992 · map :1989
@@ -40,9 +40,10 @@ From cold start to in-game, the launcher runs this pipeline:
 1. **Detect** an installed FFXIV 1.x client (per-OS; see [Platform](#platform-support)).
 2. **Check version** — read the install's `game.ver` and compare to the target
    `FFXIV_GAME_VERSION` (`2012.09.19.0001`). If it's behind, patch.
-3. **Patch** — download the needed ZiPatch files and apply them, taking the install
-   from `FFXIV_BOOT_VERSION` (`2010.09.18.0000`) up to `2012.09.19.0001`, each file
-   CRC32-verified.
+3. **Patch** — the needed ZiPatch files arrive via the BitTorrent transport (or a
+   user-supplied local patches folder), are CRC32-validated against the manifest,
+   then applied, taking the install from `FFXIV_BOOT_VERSION` (`2010.09.18.0000`) up
+   to `2012.09.19.0001`.
 4. **Log in** — open the selected server's `loginUrl` in a WebView and capture the
    `sessionId` from the `ffxiv://login_success` redirect.
 5. **Launch** — build the (Blowfish-encrypted) game arguments, apply the launch-time
@@ -66,7 +67,7 @@ Single crate, `src/`:
 |-------------------|-------------------------------------------------------------------------------------------------|
 | `app/`            | The `eframe`/`egui` GUI — server picker, game-location selector, patch progress, launch button   |
 | `servers/`        | The server registry: `ServerDefinition { name, address, login_url }`                              |
-| `patcher/`        | Patch download (`ureq`) + the apply worker thread + the patch manifest                            |
+| `patcher/`        | The apply worker thread, the patch manifest (sizes + CRCs), and torrented-archive extraction      |
 | `patch_format/`   | The ZiPatch format itself — decompress + apply file deltas                                        |
 | `login/`          | The WebView login subprocess and the `ffxiv://login_success` handshake                            |
 | `crypto/`         | Blowfish encryption of the game's launch arguments                                                |
@@ -98,13 +99,17 @@ defined in `config/paths.rs` but is not yet wired up.)
 ### `patcher/` + `patch_format/` — patching
 
 `patcher/manifest.rs` holds the hard-coded patch manifest (each entry: path, byte
-size, CRC32) and `PATCH_URL_BASE` — patches are fetched over HTTP from a fixed S3
-host, `http://ffxivpatches.s3.amazonaws.com/` (the launcher can also apply patches
-from a user-selected local directory). `patcher/worker.rs` runs the download+apply on
-a background thread, reporting progress through lock-free shared state. The apply
-step calls into `patch_format/` (the ZiPatch parser: zlib-decompress, apply file
-deltas), and each file is CRC32-checked (`crc32fast`) before it counts as applied.
-When everything applies, the launcher writes the install's `game.ver`/version files.
+size, CRC32) — validation reference data checked against whatever patches were
+acquired, regardless of source. `PATCH_URL_BASE` is a historical record of the dead
+`http://ffxivpatches.s3.amazonaws.com/` S3 archive the launcher used to download
+from before the BitTorrent transport replaced it; nothing reads it anymore. Patches
+are acquired one of two ways — the BitTorrent transport (below) or a user-selected
+local directory — then `patcher/worker.rs` runs the apply step on a background
+thread, reporting progress through lock-free shared state. The apply step calls
+into `patch_format/` (the ZiPatch parser: zlib-decompress, apply file deltas), and
+each file is CRC32-checked (`crc32fast`) against the manifest before it counts as
+applied. When everything applies, the launcher writes the install's
+`game.ver`/version files.
 
 Patches can also arrive as a torrented archive - the launcher fetches a magnet
 link from the patch-distribution endpoint (https://www.stegall.me/ffxiv/1.0/patches/torrent),
@@ -161,10 +166,12 @@ stays isolated from the GUI:
 That `sessionId` is minted by the server's web auth (`web-server`), exactly as the
 server's lobby will later expect — see the server architecture doc.
 
-### 2. Patching (HTTP)
+### 2. Patching (magnet endpoint + BitTorrent)
 
-ZiPatch files are downloaded over HTTP via `ureq` from the fixed patch host
-(`PATCH_URL_BASE`). This is independent of which game server you pick.
+`ureq` is only used to fetch the magnet link from the patch-distribution endpoint
+(`https://www.stegall.me/ffxiv/1.0/patches/torrent`); the ZiPatch payload itself
+arrives over BitTorrent (or from a user-supplied local folder), not HTTP. This is
+independent of which game server you pick.
 
 ### 3. Launch handoff (encrypted argv)
 

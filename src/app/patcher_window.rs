@@ -17,8 +17,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Patcher screen — mirrors `SeventhUmbral/launcher/PatcherWindow.cpp`. Two
-//! progress bars (download + apply), status labels, Cancel/Close button. The
-//! worker runs on a background thread; this module only polls shared state.
+//! progress bars (extract/validate + apply), status labels, Cancel/Close
+//! button. The worker runs on a background thread; this module only polls
+//! shared state.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use std::time::Instant;
 
 use eframe::egui;
 
+use crate::app::theme;
 use crate::patcher::manifest::PATCH_MANIFEST;
 use crate::patcher::{PatchSource, PatcherShared, Phase, start_patcher_worker};
 
@@ -64,14 +66,19 @@ impl PatcherScreen {
         self.shared.is_terminal()
     }
 
-    /// EWMA download-rate estimate, updated roughly every 250ms.
+    /// The worker's fatal error message, once it has failed.
+    pub fn error(&self) -> Option<String> {
+        self.shared.error()
+    }
+
+    /// EWMA transfer-rate estimate, updated roughly every 250ms.
     fn update_rate_estimate(&mut self) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_sample).as_secs_f64();
         if elapsed < 0.25 {
             return;
         }
-        let total_bytes = self.total_downloaded_bytes();
+        let total_bytes = self.total_transferred_bytes();
         let delta = total_bytes.saturating_sub(self.last_sampled_bytes);
         let instantaneous = delta as f64 / elapsed;
         // 0.3 weight on the new sample: responsive but not jittery.
@@ -81,9 +88,9 @@ impl PatcherScreen {
         self.last_sampled_bytes = total_bytes;
     }
 
-    fn total_downloaded_bytes(&self) -> u64 {
+    fn total_transferred_bytes(&self) -> u64 {
         let completed = self.shared.previous_completed_bytes.load(Ordering::Acquire);
-        let current = self.shared.download.bytes();
+        let current = self.shared.transfer.bytes();
         completed + current
     }
 
@@ -98,7 +105,7 @@ impl PatcherScreen {
         ui.heading("Game Update");
         ui.separator();
 
-        self.render_download_section(ui, phase);
+        self.render_progress_section(ui, phase);
         ui.add_space(12.0);
         self.render_patch_section(ui, phase);
 
@@ -108,7 +115,7 @@ impl PatcherScreen {
         let warnings = self.shared.warnings();
 
         if let Some(message) = &error {
-            ui.colored_label(egui::Color32::LIGHT_RED, message);
+            ui.colored_label(theme::error(ui.visuals()), message);
         }
         if !warnings.is_empty() {
             ui.collapsing(format!("Warnings ({})", warnings.len()), |ui| {
@@ -122,21 +129,21 @@ impl PatcherScreen {
         self.render_button_row(ui, phase)
     }
 
-    fn render_download_section(&self, ui: &mut egui::Ui, phase: Phase) {
-        let total_bytes = self.shared.total_download_bytes.max(1);
-        let downloaded = self.total_downloaded_bytes();
-        let fraction = (downloaded as f64 / total_bytes as f64).clamp(0.0, 1.0);
+    fn render_progress_section(&self, ui: &mut egui::Ui, phase: Phase) {
+        let total_bytes = self.shared.total_source_bytes.max(1);
+        let transferred = self.total_transferred_bytes();
+        let fraction = (transferred as f64 / total_bytes as f64).clamp(0.0, 1.0);
 
         let status = match phase {
             Phase::Starting => "Starting…".to_string(),
-            Phase::Downloading | Phase::Validating | Phase::Extracting => {
-                let idx = self.shared.download_idx.load(Ordering::Acquire);
+            Phase::Validating | Phase::Extracting => {
+                let idx = self.shared.file_idx.load(Ordering::Acquire);
                 let entry = PATCH_MANIFEST.get(idx);
-                let current = self.shared.download.bytes();
+                let current = self.shared.transfer.bytes();
                 let verb = match phase {
                     Phase::Validating => "Validating",
                     Phase::Extracting => "Extracting",
-                    _ => "Downloading",
+                    _ => unreachable!("only Validating/Extracting reach this arm"),
                 };
                 match entry {
                     Some(entry) => {
@@ -167,16 +174,14 @@ impl PatcherScreen {
         let total = self.shared.total_patches.max(1);
         let idx = self.shared.patch_idx.load(Ordering::Acquire);
         let fraction = match phase {
-            Phase::Starting | Phase::Downloading | Phase::Validating | Phase::Extracting => 0.0,
+            Phase::Starting | Phase::Validating | Phase::Extracting => 0.0,
             Phase::Patching => (idx as f64 / total as f64).clamp(0.0, 1.0),
             Phase::Done => 1.0,
             Phase::Error | Phase::Cancelled => (idx as f64 / total as f64).clamp(0.0, 1.0),
         };
 
         let status = match phase {
-            Phase::Starting | Phase::Downloading => {
-                "Patcher waiting for download to complete…".to_string()
-            }
+            Phase::Starting => "Patcher waiting for patches to be prepared…".to_string(),
             Phase::Validating => "Patcher waiting for local patches to be validated…".to_string(),
             Phase::Extracting => "Patcher waiting for patches to be extracted…".to_string(),
             Phase::Patching => PATCH_MANIFEST
