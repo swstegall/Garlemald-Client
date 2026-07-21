@@ -72,6 +72,8 @@ Single crate, `src/`:
 | `crypto/`         | Blowfish encryption of the game's launch arguments                                                |
 | `launcher/`       | Assembling the launch request, the PE patches, and starting the game                             |
 | `platform/`       | Per-OS support: native Win32 on Windows, managed Wine on macOS/Linux                              |
+| `torrent/`        | BitTorrent patch transport: magnet endpoint client + librqbit session service (download, then opt-out seeding) |
+| `install_check.rs`| The 1.23b install gate: NotFound / FoundNeedsPatch / Ready; login and launch are blocked until Ready |
 | `config/`         | Config/data paths (`directories`) and `preferences.toml`                                          |
 | `version.rs`      | The launcher version and the FFXIV boot/game version constants                                    |
 | `main.rs` / `lib.rs` | Entry point + the `run()` that wires the GUI; the `--login-webview` subcommand                 |
@@ -103,6 +105,14 @@ a background thread, reporting progress through lock-free shared state. The appl
 step calls into `patch_format/` (the ZiPatch parser: zlib-decompress, apply file
 deltas), and each file is CRC32-checked (`crc32fast`) before it counts as applied.
 When everything applies, the launcher writes the install's `game.ver`/version files.
+
+Patches can also arrive as a torrented archive - the launcher fetches a magnet
+link from the patch-distribution endpoint (https://www.stegall.me/ffxiv/1.0/patches/torrent),
+downloads the ffxiv_patches archive with an embedded librqbit session into the
+user's patch storage folder (Documents by default, configurable in settings),
+extracts the manifest patches from the zip, validates size + CRC32, and applies
+them in order; while the launcher stays open the payload is seeded back to the
+swarm unless the user opts out in settings.
 
 ### `login/` + `crypto/` — login and launch crypto
 

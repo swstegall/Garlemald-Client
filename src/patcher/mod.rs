@@ -17,11 +17,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod downloader;
+mod extract;
 pub mod manifest;
 mod process;
 mod worker;
 
 pub use downloader::{DownloadProgress, DownloadResult, Downloader};
+pub use extract::{PatchPayload, find_patch_payload};
 pub use manifest::{PATCH_MANIFEST, PATCH_URL_BASE, PatchEntry};
 pub use process::{PatchPlan, check_game_version, write_version_files};
 pub use worker::{PatchSource, PatcherShared, Phase, start_patcher_worker};

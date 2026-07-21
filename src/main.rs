@@ -27,7 +27,9 @@ fn main() -> Result<()> {
         eprintln!("{}", std::backtrace::Backtrace::force_capture());
     }));
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Stdout)
+        .init();
 
     let mut args = std::env::args().skip(1);
     if let Some(first) = args.next()

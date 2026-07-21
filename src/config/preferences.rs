@@ -30,7 +30,7 @@ pub struct Preferences {
     pub developer: DeveloperPreferences,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherPreferences {
     #[serde(default)]
     pub server_name: String,
@@ -42,6 +42,28 @@ pub struct LauncherPreferences {
     pub wine_runtime_dir: Option<PathBuf>,
     #[serde(default)]
     pub patch_download_dir: Option<PathBuf>,
+    /// Seed the patch torrent while the launcher is open. Opt-out:
+    /// defaults to `true` both for a missing field (older files) and a
+    /// missing section.
+    #[serde(default = "default_seed_patches")]
+    pub seed_patches: bool,
+}
+
+fn default_seed_patches() -> bool {
+    true
+}
+
+impl Default for LauncherPreferences {
+    fn default() -> Self {
+        Self {
+            server_name: Default::default(),
+            server_address: Default::default(),
+            game_location: Default::default(),
+            wine_runtime_dir: Default::default(),
+            patch_download_dir: Default::default(),
+            seed_patches: true,
+        }
+    }
 }
 
 /// Developer-only knobs surfaced in the Developer Settings dialog. Off by
@@ -119,5 +141,39 @@ mod tests {
         let path = tmp.path().join("prefs.toml");
         let prefs = Preferences::load(&path).unwrap();
         assert!(prefs.launcher.server_name.is_empty());
+    }
+
+    #[test]
+    fn seed_patches_defaults_to_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty_path = tmp.path().join("empty.toml");
+        fs::write(&empty_path, "").unwrap();
+        let empty = Preferences::load(&empty_path).unwrap();
+        assert!(empty.launcher.seed_patches);
+
+        // A [launcher] section written before the field existed.
+        let old_path = tmp.path().join("old.toml");
+        fs::write(
+            &old_path,
+            r#"
+                [launcher]
+                server_name = "Van Darnus Server"
+            "#,
+        )
+        .unwrap();
+        let old = Preferences::load(&old_path).unwrap();
+        assert!(old.launcher.seed_patches);
+    }
+
+    #[test]
+    fn seed_patches_opt_out_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("prefs.toml");
+        let mut prefs = Preferences::default();
+        prefs.launcher.seed_patches = false;
+        prefs.save(&path).unwrap();
+
+        let loaded = Preferences::load(&path).unwrap();
+        assert!(!loaded.launcher.seed_patches);
     }
 }

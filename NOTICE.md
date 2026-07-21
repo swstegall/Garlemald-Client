@@ -34,6 +34,22 @@ the game binary. The launcher's behavior, PE-patching approach, and
 1.x client quirks documented in Seventh Umbral's source are the basis
 for the corresponding logic in this crate.
 
+## Bahamut Launcher
+
+- Source: <https://github.com/BahamutXIV/bahamut-launcher>
+- License: MIT (Copyright (c) 2026 Aeshur and the BahamutXIV contributors)
+
+Bahamut Launcher is the companion launcher for the BahamutXIV FFXIV
+1.23b preservation server. `garlemald-client`'s BitTorrent patch
+distribution is a direct port of its implementation: the
+librqbit-based torrent service (download once, then opt-out seeding),
+the magnet-link distribution endpoint client, the 1.23b install gate
+that blocks login until the client is patched, and the patch-archive
+zip extraction feeding the ZiPatch apply pipeline. Credit for the
+torrent transport design, the install-readiness state machine, and
+the archive-extraction approach belongs to Aeshur and the BahamutXIV
+contributors.
+
 ## LandSandBoat (sister-project, FFXI reference)
 
 - Source: <https://github.com/LandSandBoat/server>
@@ -65,8 +81,9 @@ GPL-3 → AGPL-3 combined-work rule (§13 of GPLv3) documented in
 ## Acknowledgments
 
 Thanks to Ioncannon, Jean-Philip Desjardins, and every contributor to
-Project Meteor Server, Seventh Umbral, the LandSandBoat and DarkStar
-Project developer teams (past and present), the FFXIV Classic wiki
+Project Meteor Server, Seventh Umbral, the BahamutXIV contributors,
+the LandSandBoat and DarkStar Project developer teams (past and
+present), the FFXIV Classic wiki
 (<http://ffxivclassic.fragmenterworks.com/wiki/>), and the wider
 community of 1.0 preservationists whose notes, spreadsheets, and
 packet captures made this port feasible.

@@ -19,8 +19,8 @@
 //! Background driver for the patcher phase. Runs on its own thread so the
 //! egui UI stays responsive; the UI polls [`PatcherShared`] each frame.
 
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::fs::{self, File};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -30,15 +30,25 @@ use crc32fast::Hasher as Crc32Hasher;
 use parking_lot::Mutex;
 
 use super::downloader::{DownloadProgress, DownloadResult, Downloader};
+use super::extract::{ExtractError, extract_manifest_patches};
 use super::manifest::{PATCH_MANIFEST, PATCH_URL_BASE, PatchEntry, total_bytes};
 use super::process::{PatchPlan, write_version_files};
 
 /// Where the worker should get the patch files from. `Download` fetches the
 /// manifest from the S3 bucket; `Local` trusts a pre-existing directory
 /// (typically another install's patch cache) and just validates + applies it.
+#[derive(Debug)]
 pub enum PatchSource {
-    Download { download_dir: PathBuf },
-    Local { source_dir: PathBuf },
+    Download {
+        download_dir: PathBuf,
+    },
+    Local {
+        source_dir: PathBuf,
+    },
+    /// Unpack the manifest patches from a torrented archive, then apply.
+    LocalZip {
+        zip_path: PathBuf,
+    },
 }
 
 /// High-level phase reported by the worker. Serialized as `u8` into an
@@ -53,6 +63,7 @@ pub enum Phase {
     Error = 4,
     Cancelled = 5,
     Validating = 6,
+    Extracting = 7,
 }
 
 impl Phase {
@@ -64,6 +75,7 @@ impl Phase {
             4 => Phase::Error,
             5 => Phase::Cancelled,
             6 => Phase::Validating,
+            7 => Phase::Extracting,
             _ => Phase::Starting,
         }
     }
@@ -128,7 +140,9 @@ impl PatcherShared {
     }
 
     fn set_error(&self, message: impl Into<String>) {
-        *self.error_message.lock() = Some(message.into());
+        let message = message.into();
+        log::warn!("patcher: {message}");
+        *self.error_message.lock() = Some(message);
         self.set_phase(Phase::Error);
     }
 
@@ -152,6 +166,16 @@ pub fn start_patcher_worker(
 }
 
 fn run_patcher(shared: Arc<PatcherShared>, game_dir: PathBuf, source: PatchSource) {
+    log::info!("patcher: starting, source={source:?}");
+
+    // Populated only by the LocalZip arm; its Drop impl removes the
+    // staging directory once this function returns, on every exit path
+    // (cancel, apply failure, or a clean finish) alike.
+    let mut staging_cleanup = StagingCleanup {
+        shared: shared.clone(),
+        staging_dir: None,
+    };
+
     let plan = match source {
         PatchSource::Download { download_dir } => {
             match run_download_phase(&shared, &download_dir) {
@@ -163,9 +187,16 @@ fn run_patcher(shared: Arc<PatcherShared>, game_dir: PathBuf, source: PatchSourc
             Some(plan) => plan,
             None => return,
         },
+        PatchSource::LocalZip { zip_path } => {
+            match extract_and_verify(&shared, &zip_path, &mut staging_cleanup) {
+                Some(plan) => plan,
+                None => return,
+            }
+        }
     };
 
     shared.set_phase(Phase::Patching);
+    log::info!("patcher: applying {} patches", plan.patches_in_order.len());
 
     for (idx, patch_path) in plan.patches_in_order.iter().enumerate() {
         if shared.is_cancel_requested() {
@@ -174,6 +205,16 @@ fn run_patcher(shared: Arc<PatcherShared>, game_dir: PathBuf, source: PatchSourc
         }
         shared.patch_idx.store(idx, Ordering::Release);
 
+        let leaf = patch_path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| patch_path.display().to_string());
+        log::info!(
+            "patcher: applying {leaf} ({}/{})",
+            idx + 1,
+            plan.patches_in_order.len()
+        );
+
         match crate::patch_format::apply_patch_file(patch_path, &game_dir) {
             Ok(result) => {
                 for msg in result.messages {
@@ -181,13 +222,7 @@ fn run_patcher(shared: Arc<PatcherShared>, game_dir: PathBuf, source: PatchSourc
                 }
             }
             Err(e) => {
-                shared.set_error(format!(
-                    "Applying patch {} failed: {e}",
-                    patch_path
-                        .file_name()
-                        .map(|f| f.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| patch_path.display().to_string())
-                ));
+                shared.set_error(format!("Applying patch {leaf} failed: {e}"));
                 return;
             }
         }
@@ -197,7 +232,72 @@ fn run_patcher(shared: Arc<PatcherShared>, game_dir: PathBuf, source: PatchSourc
         shared.push_warning(format!("Failed to write version files: {e}"));
     }
 
+    log::info!("patcher: all patches applied");
     shared.set_phase(Phase::Done);
+}
+
+/// RAII guard that best-effort removes the extraction staging directory
+/// once `run_patcher` reaches a terminal phase, however it gets there
+/// (cancel, a failed patch apply, or a clean finish). A no-op unless the
+/// LocalZip arm populates `staging_dir`.
+struct StagingCleanup {
+    shared: Arc<PatcherShared>,
+    staging_dir: Option<PathBuf>,
+}
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        let Some(dir) = self.staging_dir.take() else {
+            return;
+        };
+        if let Err(e) = fs::remove_dir_all(&dir)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            self.shared
+                .push_warning(format!("Could not remove the patch staging directory: {e}"));
+        }
+    }
+}
+
+/// Unpacks the manifest patches from `zip_path` into a fresh staging
+/// directory, then validates them exactly like [`run_validate_phase`] - the
+/// LocalZip flow reuses the same plan builder and progress reporting a
+/// user-supplied patch directory gets. Records the staging directory on
+/// `cleanup` so [`StagingCleanup`] removes it once the run finishes.
+/// Returns `None` (after setting the terminal phase) on cancel or any
+/// extraction failure.
+fn extract_and_verify(
+    shared: &Arc<PatcherShared>,
+    zip_path: &Path,
+    cleanup: &mut StagingCleanup,
+) -> Option<PatchPlan> {
+    shared.set_phase(Phase::Extracting);
+
+    let staging = match crate::config::patch_staging_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            shared.set_error(format!(
+                "Could not resolve the patch staging directory: {e}"
+            ));
+            return None;
+        }
+    };
+    cleanup.staging_dir = Some(staging.clone());
+
+    if let Err(e) = extract_manifest_patches(zip_path, &staging, shared) {
+        match e {
+            ExtractError::Cancelled => shared.set_phase(Phase::Cancelled),
+            other => shared.set_error(format!("Could not unpack the patch archive: {other}")),
+        }
+        return None;
+    }
+
+    // The extract pass already consumed the full total; restart the
+    // counters so the Validating pass's progress bar starts clean.
+    shared.previous_completed_bytes.store(0, Ordering::Release);
+    shared.download.bytes_downloaded.store(0, Ordering::SeqCst);
+
+    run_validate_phase(shared, &staging)
 }
 
 fn run_download_phase(shared: &Arc<PatcherShared>, download_dir: &Path) -> Option<PatchPlan> {
@@ -387,4 +487,58 @@ fn validate_file(
         return Err(ValidateError::Crc32Mismatch);
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_survives_a_u8_round_trip() {
+        for phase in [
+            Phase::Starting,
+            Phase::Downloading,
+            Phase::Patching,
+            Phase::Done,
+            Phase::Error,
+            Phase::Cancelled,
+            Phase::Validating,
+            Phase::Extracting,
+        ] {
+            assert_eq!(Phase::from_u8(phase as u8), phase);
+        }
+    }
+
+    #[test]
+    fn fresh_shared_is_in_starting_phase() {
+        let shared = PatcherShared::new();
+        assert_eq!(shared.phase(), Phase::Starting);
+        assert!(!shared.is_terminal());
+        assert!(shared.error().is_none());
+    }
+
+    #[test]
+    fn cancel_request_reaches_the_progress_flag() {
+        let shared = PatcherShared::new();
+        assert!(!shared.is_cancel_requested());
+        shared.request_cancel();
+        assert!(shared.is_cancel_requested());
+    }
+
+    #[test]
+    fn set_error_records_message_and_is_terminal() {
+        let shared = PatcherShared::new();
+        shared.set_error("boom");
+        assert_eq!(shared.phase(), Phase::Error);
+        assert_eq!(shared.error().as_deref(), Some("boom"));
+        assert!(shared.is_terminal());
+    }
+
+    #[test]
+    fn warnings_keep_their_order() {
+        let shared = PatcherShared::new();
+        shared.push_warning("first");
+        shared.push_warning("second");
+        assert_eq!(shared.warnings(), vec!["first", "second"]);
+    }
 }

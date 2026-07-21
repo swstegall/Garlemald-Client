@@ -20,6 +20,7 @@ mod paths;
 mod preferences;
 
 pub use paths::{
-    bundled_config_path, config_dir, data_dir, preferences_file_path, servers_file_path,
+    bundled_config_path, cache_dir, config_dir, data_dir, default_torrent_storage_dir,
+    patch_staging_dir, preferences_file_path, servers_file_path, torrent_session_dir,
 };
 pub use preferences::{DeveloperPreferences, Preferences};

@@ -129,14 +129,14 @@ impl PatcherScreen {
 
         let status = match phase {
             Phase::Starting => "Starting…".to_string(),
-            Phase::Downloading | Phase::Validating => {
+            Phase::Downloading | Phase::Validating | Phase::Extracting => {
                 let idx = self.shared.download_idx.load(Ordering::Acquire);
                 let entry = PATCH_MANIFEST.get(idx);
                 let current = self.shared.download.bytes();
-                let verb = if phase == Phase::Validating {
-                    "Validating"
-                } else {
-                    "Downloading"
+                let verb = match phase {
+                    Phase::Validating => "Validating",
+                    Phase::Extracting => "Extracting",
+                    _ => "Downloading",
                 };
                 match entry {
                     Some(entry) => {
@@ -167,7 +167,7 @@ impl PatcherScreen {
         let total = self.shared.total_patches.max(1);
         let idx = self.shared.patch_idx.load(Ordering::Acquire);
         let fraction = match phase {
-            Phase::Starting | Phase::Downloading | Phase::Validating => 0.0,
+            Phase::Starting | Phase::Downloading | Phase::Validating | Phase::Extracting => 0.0,
             Phase::Patching => (idx as f64 / total as f64).clamp(0.0, 1.0),
             Phase::Done => 1.0,
             Phase::Error | Phase::Cancelled => (idx as f64 / total as f64).clamp(0.0, 1.0),
@@ -178,6 +178,7 @@ impl PatcherScreen {
                 "Patcher waiting for download to complete…".to_string()
             }
             Phase::Validating => "Patcher waiting for local patches to be validated…".to_string(),
+            Phase::Extracting => "Patcher waiting for patches to be extracted…".to_string(),
             Phase::Patching => PATCH_MANIFEST
                 .get(idx)
                 .map(|entry| format!("Applying {}…", leaf_name(entry.path)))

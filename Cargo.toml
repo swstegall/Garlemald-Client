@@ -23,10 +23,20 @@ flate2 = "1"
 blowfish = "0.9"
 cipher = "0.4"
 base64 = "0.22"
-ureq = { version = "2", features = ["tls"] }
+ureq = { version = "2", features = ["tls", "json"] }
 object = { version = "0.36", features = ["read"] }
 parking_lot = "0.12"
 tempfile = "3"
+
+# BitTorrent client for the patch-archive magnet link. rust-tls (not the
+# default-tls feature) avoids pulling in a second TLS stack alongside ureq's.
+librqbit = { version = "8", default-features = false, features = ["rust-tls"] }
+# The torrent service owns a private multi-thread runtime; the rest of the
+# crate stays runtime-free.
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+# Reads the patch archive zip out of the torrent payload; deflate covers
+# the patch zips' compression method.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = "0.28"

@@ -16,21 +16,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-pub mod app;
-pub mod config;
-pub mod crypto;
-pub mod install_check;
-pub mod launcher;
-pub mod login;
-pub mod patch_format;
-pub mod patcher;
-pub mod platform;
-pub mod servers;
-pub mod torrent;
-pub mod version;
+//! BitTorrent transport for the 1.x patch archive: fetches the magnet
+//! link from the distribution endpoint and drives a librqbit session
+//! that downloads and (opt-out) seeds the payload.
 
-use anyhow::Result;
+pub mod endpoint;
+pub mod service;
 
-pub fn run() -> Result<()> {
-    app::run()
-}
+pub use endpoint::{MagnetFetchError, TORRENT_ENDPOINT, fetch_magnet};
+pub use service::{TorrentService, TorrentServiceError, TorrentSnapshot, TorrentState};
