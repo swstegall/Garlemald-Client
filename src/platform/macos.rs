@@ -20,7 +20,7 @@
 //!
 //! Manages its own Wine prefix and runtime under
 //! `~/Library/Application Support/me.stegall.garlemald-client/`, downloading the
-//! Sikarugir CrossOver engine + Frameworks on first launch. Interoperates
+//! Sikarugir Wine engine + Frameworks on first launch. Interoperates
 //! with externally-managed prefixes (e.g. the sibling
 //! `xiv1point0-apple-silicon-installer`) by deriving `WINEPREFIX` from the
 //! game-location path that the user has configured — our own Wine binary
@@ -54,9 +54,14 @@ use crate::platform::wine::{
 const WRAPPER_VERSION: &str = "1.0.11";
 const WRAPPER_URL: &str =
     "https://github.com/Sikarugir-App/Wrapper/releases/download/v1.0/Template-1.0.11.tar.xz";
-const ENGINE_NAME: &str = "WS12WineCX24.0.7_7";
+// WineCX 23.7.1 rather than 24.0.7 or an upstream-based build: CX 24's mac
+// driver fails to initialize on macOS 27, unpatched wined3d-GL engines render
+// this title too slowly to play, and DXVK is blocked on macOS (winevulkan
+// wow64 feature thunking + MoltenVK gaps), so the CX-patched D3D9 path is
+// required.
+const ENGINE_NAME: &str = "WS12WineCX23.7.1_4";
 const ENGINE_URL: &str =
-    "https://github.com/Sikarugir-App/Engines/releases/download/v1.0/WS12WineCX24.0.7_7.tar.xz";
+    "https://github.com/Sikarugir-App/Engines/releases/download/v1.0/WS12WineCX23.7.1_4.tar.xz";
 
 pub struct MacosPlatform;
 
@@ -175,8 +180,8 @@ impl Platform for MacosPlatform {
             &launch_args.encoded_argument,
             request.wine_debug_override.as_deref(),
             request.enable_winsock_proxy,
-            // DXVK auto-provisioning is Linux-only; the CrossOver engine
-            // provides the accelerated D3D path on macOS.
+            // DXVK auto-provisioning is Linux-only; the bundled engine
+            // provides the D3D path on macOS.
             None,
         )?;
         Ok(())
@@ -222,9 +227,13 @@ fn is_apple_silicon() -> bool {
     cfg!(all(target_os = "macos", target_arch = "aarch64"))
 }
 
-/// Downloads the Sikarugir wrapper Frameworks + CrossOver engine if they
-/// aren't already on disk. Safe to call every launch — it's a fast path when
-/// the runtime is present.
+/// Downloads the Sikarugir wrapper Frameworks + Wine engine when they are
+/// missing, or when the version markers show a different version on disk
+/// (the bundle paths are version-less, so marker files in the runtime root
+/// record what is installed). Safe to call every launch — it's a fast path
+/// when the runtime is current. A stale component is removed only after its
+/// replacement archive has been downloaded and extracted, so a failed
+/// download never destroys a working runtime.
 pub fn ensure_runtime_downloaded() -> Result<()> {
     let runtime_root = MacosPlatform::runtime_root()?;
     let frameworks = runtime_root.join("Frameworks");
@@ -234,7 +243,12 @@ pub fn ensure_runtime_downloaded() -> Result<()> {
     fs::create_dir_all(&runtime_root)
         .with_context(|| format!("creating runtime dir {}", runtime_root.display()))?;
 
-    if !frameworks.exists() {
+    let wrapper_marker = runtime_root.join("wrapper-version");
+    if install_needed(
+        frameworks.exists(),
+        fs::read_to_string(&wrapper_marker).ok().as_deref(),
+        WRAPPER_VERSION,
+    ) {
         log::info!("downloading Sikarugir wrapper v{WRAPPER_VERSION} ({WRAPPER_URL})");
         let tmp = tempfile::tempdir().context("creating tmp dir for wrapper archive")?;
         let archive = tmp.path().join("wrapper.tar.xz");
@@ -249,11 +263,22 @@ pub fn ensure_runtime_downloaded() -> Result<()> {
                 src.display()
             ));
         }
+        if frameworks.exists() {
+            fs::remove_dir_all(&frameworks)
+                .with_context(|| format!("removing stale {}", frameworks.display()))?;
+        }
         copy_dir_preserving_symlinks(&src, &frameworks).context("copying wrapper Frameworks")?;
+        fs::write(&wrapper_marker, WRAPPER_VERSION)
+            .with_context(|| format!("writing {}", wrapper_marker.display()))?;
         log::info!("installed Frameworks at {}", frameworks.display());
     }
 
-    if !wine_bin.exists() {
+    let engine_marker = runtime_root.join("engine-version");
+    if install_needed(
+        wine_bin.exists(),
+        fs::read_to_string(&engine_marker).ok().as_deref(),
+        ENGINE_NAME,
+    ) {
         log::info!("downloading Wine engine {ENGINE_NAME} ({ENGINE_URL})");
         let tmp = tempfile::tempdir().context("creating tmp dir for engine archive")?;
         let archive = tmp.path().join("engine.tar.xz");
@@ -294,7 +319,15 @@ pub fn ensure_runtime_downloaded() -> Result<()> {
         }
         Err(e) => return Err(anyhow!("failed to execute {}: {e}", wine_bin.display())),
     }
+    fs::write(&engine_marker, ENGINE_NAME)
+        .with_context(|| format!("writing {}", engine_marker.display()))?;
     Ok(())
+}
+
+/// Whether a runtime component must be (re)installed: it is missing, or its
+/// version marker does not name the version this build wants.
+fn install_needed(present: bool, marker: Option<&str>, want: &str) -> bool {
+    !present || marker.is_none_or(|m| m.trim() != want)
 }
 
 fn download_to(url: &str, dst: &Path) -> Result<()> {
@@ -406,5 +439,26 @@ mod tests {
         // wrapping u32 (~49.7 days).
         let t = monotonic_ms_since_boot();
         assert!(t > 1_000, "expected non-trivial uptime, got {t}");
+    }
+
+    #[test]
+    fn install_needed_quadrants() {
+        // A missing component installs regardless of the marker.
+        assert!(install_needed(false, None, ENGINE_NAME));
+        assert!(install_needed(false, Some(ENGINE_NAME), ENGINE_NAME));
+        // Present + matching marker (trailing newline tolerated) is the only skip.
+        assert!(!install_needed(true, Some(ENGINE_NAME), ENGINE_NAME));
+        assert!(!install_needed(
+            true,
+            Some(&format!("{ENGINE_NAME}\n")),
+            ENGINE_NAME
+        ));
+        // Present but unmarked or differently marked reinstalls.
+        assert!(install_needed(true, None, ENGINE_NAME));
+        assert!(install_needed(
+            true,
+            Some("WS12WineCX24.0.7_7"),
+            ENGINE_NAME
+        ));
     }
 }

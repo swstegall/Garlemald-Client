@@ -22,7 +22,7 @@
 //! D3D9 → OpenGL on a single thread; it is CPU-bound and starves the GPU on
 //! this title (single-digit framerate in-world, GPU near-idle). DXVK translates
 //! D3D9 → Vulkan with far lower CPU overhead — the same accelerated path the
-//! macOS CrossOver engine already provides, which is why macOS runs it well.
+//! bundled macOS engine already provides, which is why macOS runs it well.
 //!
 //! On first launch we download a pinned DXVK release into the runtime cache,
 //! drop its 32-bit `d3d9.dll` / `dxgi.dll` into the prefix's `syswow64`, and
@@ -31,9 +31,9 @@
 //! rather than breaking the launch. Everything here is best-effort: any error
 //! (no Vulkan, offline, disabled) leaves the game on wined3d, logged.
 //!
-//! macOS is intentionally not handled here — its CrossOver engine ships its own
+//! macOS is intentionally not handled here — its bundled engine ships its own
 //! accelerated D3D path, and forcing upstream DXVK into that prefix can conflict
-//! with CrossOver's patched Wine + bundled MoltenVK.
+//! with the engine's patched Wine + bundled MoltenVK.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

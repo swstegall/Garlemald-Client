@@ -25,7 +25,7 @@
 //! ├── prefix/                              # WINEPREFIX
 //! │   └── drive_c/Program Files (x86)/SquareEnix/FINAL FANTASY XIV/
 //! └── runtime/                             # macOS only
-//!     ├── wswine.bundle/                   # Sikarugir CrossOver engine
+//!     ├── wswine.bundle/                   # Sikarugir Wine engine
 //!     └── Frameworks/                      # bundled MoltenVK, libinotify, …
 //! ```
 //!
