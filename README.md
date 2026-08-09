@@ -52,13 +52,20 @@ scripts/package-macos.sh --universal   # x86_64 + aarch64 fat binary
 
 On Windows, the launcher must be built as 32-bit (`i686`) so it can
 read the suspended thread context of the 32-bit `ffxivgame.exe` and
-patch it at launch. Requires the MSVC C++ x86 build tools.
+patch it at launch — a 64-bit build is rejected at compile time.
+Requires the MSVC C++ x86 build tools and [NASM](https://www.nasm.us/)
+on `PATH` (`winget install nasm`), which `aws-lc-sys` uses to assemble
+its crypto.
 
 ```powershell
 rustup target add i686-pc-windows-msvc
 cargo build --release --target i686-pc-windows-msvc
 cargo run   --release --target i686-pc-windows-msvc
 ```
+
+> Tip: create a local (gitignored) `.cargo/config.toml` with
+> `[build]` → `target = "i686-pc-windows-msvc"` so plain `cargo build` /
+> `cargo run` default to 32-bit. See [docs/dev-environment.md](docs/dev-environment.md).
 
 ## Documentation
 

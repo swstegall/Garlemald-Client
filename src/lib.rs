@@ -16,6 +16,20 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// The launcher must be built 32-bit on Windows: the PE patcher reads the
+// suspended 32-bit `ffxivgame.exe` thread context (via GetThreadContext), which a
+// 64-bit process cannot do, so a 64-bit launcher cannot patch or launch the game.
+// Reject it at compile time rather than ship a non-functional x64 binary. Build
+// with `--target i686-pc-windows-msvc` (a local .cargo/config.toml can pin it as
+// the default — see docs/dev-environment.md). This never fires on macOS/Linux or
+// on the i686 target.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+compile_error!(
+    "garlemald-client must be built as 32-bit on Windows: use \
+     `--target i686-pc-windows-msvc` (the x86_64 launcher cannot patch/launch the \
+     32-bit ffxivgame.exe). See docs/dev-environment.md."
+);
+
 pub mod app;
 pub mod config;
 pub mod crypto;

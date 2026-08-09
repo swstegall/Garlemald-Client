@@ -2,14 +2,14 @@
 rem Package garlemald-client as a distributable Windows folder + .zip.
 rem
 rem Usage:
-rem   scripts\package-windows.cmd [--debug] [--target TRIPLE]
+rem   scripts\package-windows.cmd [--debug]
 rem
-rem   --debug         Use the dev profile instead of release.
-rem   --target TRIPLE Override the build target. Defaults to whatever the
-rem                   per-repo .cargo\config.toml pins (i686-pc-windows-msvc),
-rem                   which is required for the PE patcher to work against
-rem                   the 32-bit ffxivgame.exe. Pass x86_64-pc-windows-msvc
-rem                   for a launcher-only x64 build (no game launching).
+rem   --debug   Use the dev profile instead of release.
+rem
+rem Always builds the 32-bit i686-pc-windows-msvc target: the PE patcher reads the
+rem suspended 32-bit ffxivgame.exe thread context, which a 64-bit launcher can't do
+rem (src\lib.rs rejects x86_64-pc-windows-msvc at compile time). Requires NASM on
+rem PATH for aws-lc-sys (winget install nasm / choco install nasm).
 rem
 rem Output: target\windows-package\garlemald-client\
 rem         target\windows-package\garlemald-client-<version>-<target>.zip
@@ -26,8 +26,8 @@ for %%i in ("%PROJECT_DIR%") do set "PROJECT_DIR=%%~fi"
 set "BINARY_NAME=garlemald-client"
 set "PROFILE=release"
 set "PROFILE_FLAG=--release"
-rem Default to i686 -- matches .cargo\config.toml and is required for the
-rem PE patcher to work against the 32-bit ffxivgame.exe. Override with --target.
+rem 32-bit ONLY -- required for the PE patcher to work against the 32-bit
+rem ffxivgame.exe (a 64-bit launcher can't read its thread context).
 set "TARGET=i686-pc-windows-msvc"
 
 :parse
@@ -41,16 +41,6 @@ if /i "%~1"=="--debug" (
 if /i "%~1"=="--release" (
     set "PROFILE=release"
     set "PROFILE_FLAG=--release"
-    shift
-    goto parse
-)
-if /i "%~1"=="--target" (
-    if "%~2"=="" (
-        1>&2 echo --target requires a triple argument
-        exit /b 2
-    )
-    set "TARGET=%~2"
-    shift
     shift
     goto parse
 )
@@ -129,10 +119,10 @@ echo   "%PKG_DIR%\%BINARY_NAME%.exe"
 exit /b 0
 
 :usage
-echo Usage: %~nx0 [--debug^|--release] [--target TRIPLE]
+echo Usage: %~nx0 [--debug^|--release]
 echo.
-echo Builds garlemald-client and packages it under target\windows-package\
-echo as both a folder and a versioned .zip. Default profile is release;
-echo default target is whatever .cargo\config.toml pins ^(i686-pc-windows-msvc
-echo for the PE-patcher path to work against the 32-bit FFXIV 1.x binary^).
+echo Builds garlemald-client ^(32-bit i686-pc-windows-msvc^) and packages it under
+echo target\windows-package\ as both a folder and a versioned .zip. Default profile
+echo is release. 32-bit is required for the PE patcher to work against the 32-bit
+echo FFXIV 1.x binary; requires NASM on PATH.
 exit /b 0

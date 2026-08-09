@@ -20,7 +20,7 @@ For *what* the launcher does, read [`architecture.md`](architecture.md) first.
   |----------|---------------|
   | **macOS** (Apple Silicon + Intel) | Xcode Command Line Tools. Apple Silicon also needs **Rosetta 2** at *run* time (the managed Wine engine is x86) — `softwareupdate --install-rosetta --agree-to-license`. |
   | **Linux** | A C toolchain plus the GTK3 / WebKit2GTK / X11 / Wayland / GL dev libraries (see the list below). The game itself runs under **system Wine** (Wine 7+), so install `wine` from your distro too. |
-  | **Windows** | The **32-bit** MSVC C++ build tools — the launcher builds as `i686` (it reads the suspended 32-bit `ffxivgame.exe` thread context to patch it). |
+  | **Windows** | The **32-bit** MSVC C++ build tools — the launcher builds as `i686` (it reads the suspended 32-bit `ffxivgame.exe` thread context to patch it). Plus **[NASM](https://www.nasm.us/)** on `PATH` for the 32-bit build (see the note under [Build and run](#build-and-run)). |
 
   Linux dev libraries (the same set CI installs — Debian/Ubuntu names):
 
@@ -44,12 +44,37 @@ cargo build --release
 cargo run --release
 ```
 
-On **Windows**, build/run for the 32-bit target:
+On **Windows** the launcher is **32-bit only** (`i686-pc-windows-msvc`): the PE
+patcher reads the suspended 32-bit `ffxivgame.exe` thread context, which a 64-bit
+process cannot do, so an `x86_64-pc-windows-msvc` build is **rejected at compile
+time** (`src/lib.rs`). CI and the release workflow build i686; so should you:
 
 ```powershell
 rustup target add i686-pc-windows-msvc
 cargo run --release --target i686-pc-windows-msvc
 ```
+
+To drop the `--target` and have plain `cargo build` / `cargo run` default to 32-bit,
+create a **local** `.cargo/config.toml` in the repo root — it's gitignored on
+purpose, because a *committed* pin would force i686 on macOS/Linux checkouts too:
+
+```toml
+[build]
+target = "i686-pc-windows-msvc"
+```
+
+> **NASM is required on Windows.** `aws-lc-sys` (pulled in transitively via
+> `librqbit` → `aws-lc-rs` for torrent-piece SHA-1) assembles its crypto with
+> [NASM](https://www.nasm.us/), and the 32-bit `i686` target has no prebuilt
+> objects, so NASM must be on `PATH`:
+>
+> ```powershell
+> winget install nasm   # or: choco install nasm
+> ```
+>
+> If NASM lands somewhere off `PATH` (e.g. `%LOCALAPPDATA%\bin\NASM` or
+> `C:\Program Files\NASM`), add that directory to `PATH` so the aws-lc-sys build
+> script can invoke `nasm`.
 
 Distributable bundles (see `scripts/`):
 

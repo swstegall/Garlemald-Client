@@ -10,6 +10,10 @@ target/
 **/*.rs.bk
 Cargo.lock.bak
 .DS_Store
+# Local, per-machine Cargo config. Kept out of the repo because the Windows
+# build pins `build.target = "i686-pc-windows-msvc"` here, and a committed pin
+# would force that target on macOS/Linux checkouts too. Each Windows dev creates
+# their own (see docs/dev-environment.md).
 /.cargo
 
 # Stray intermediate `.def` files from in-place ordinal edits.

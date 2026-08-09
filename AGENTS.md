@@ -29,7 +29,13 @@ cargo run --release
 ```
 
 - **Windows:** build the **32-bit** target — `cargo run --release --target i686-pc-windows-msvc`
-  (it reads the suspended 32-bit `ffxivgame.exe` thread context to patch it).
+  (it reads the suspended 32-bit `ffxivgame.exe` thread context to patch it). x86_64
+  Windows builds are **rejected at compile time** (`src/lib.rs`); CI, the release
+  workflow, and `scripts/package-windows.cmd` all build i686. The build needs **NASM**
+  on `PATH` (`aws-lc-sys` assembles its crypto with it). A **local**, gitignored
+  `.cargo/config.toml` with `build.target = "i686-pc-windows-msvc"` lets plain
+  `cargo build`/`cargo run` default to 32-bit (a committed pin would break
+  macOS/Linux). See [`docs/dev-environment.md`](docs/dev-environment.md).
 - **Linux:** needs the GTK3 / WebKit2GTK / X11 / Wayland / GL dev libraries and
   system Wine; see [`docs/dev-environment.md`](docs/dev-environment.md).
 - **macOS Apple Silicon:** needs Rosetta 2 at run time (the managed Wine engine is x86).

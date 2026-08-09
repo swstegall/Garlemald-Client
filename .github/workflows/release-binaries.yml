@@ -43,7 +43,10 @@ jobs:
           # scripts/package-macos.sh --universal (aarch64 is the host; we add x86_64).
           - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, rust_target: x86_64-unknown-linux-gnu }
           - { os: macos-latest,   target: universal-apple-darwin,   rust_target: x86_64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,   rust_target: x86_64-pc-windows-msvc }
+          # Windows ships 32-bit ONLY — the launcher patches the 32-bit ffxivgame.exe
+          # by reading its thread context, which a 64-bit process can't do (src/lib.rs
+          # rejects x86_64-pc-windows-msvc at compile time).
+          - { os: windows-latest, target: i686-pc-windows-msvc,     rust_target: i686-pc-windows-msvc }
     steps:
       - name: Resolve tag
         id: tag
@@ -241,6 +244,16 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/asc_key.p8" 2>/dev/null || true
+
+      # aws-lc-sys (via librqbit -> aws-lc-rs for torrent-piece SHA-1) assembles its
+      # crypto with NASM; the 32-bit Windows target has no prebuilt objects, so NASM
+      # must be on PATH. choco is preinstalled on the windows-latest runner.
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Package (Windows — .exe, zipped)
         if: runner.os == 'Windows'
