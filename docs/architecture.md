@@ -89,12 +89,21 @@ is the developer settings modal (verbose Wine logging, winsock tracing).
 
 ### `servers/` — the server registry
 
-A `ServerDefinition` is `{ name, address, login_url }`. The selectable server list is
-baked into the binary from `src/servers/default_servers.toml` (`include_str!` as
-`DEFAULT_SERVERS_TOML`, parsed by `ServerDefinitions::load_default` — e.g. a
+A `ServerDefinition` is `{ name, address, login_url, api_url }`. The selectable server
+list is baked into the binary from `src/servers/default_servers.toml` (`include_str!`
+as `DEFAULT_SERVERS_TOML`, parsed by `ServerDefinitions::load_default` — e.g. a
 `Localhost` entry pointing at `127.0.0.1`'s web login). The *selected* server's
 name/address is persisted in `preferences.toml`. (A `servers.xml` config path is
 defined in `config/paths.rs` but is not yet wired up.)
+
+Login takes one of two shapes. A server with a `login_url` opens it in the webview
+subprocess (see `login/`). A server with an empty `login_url` and an `api_url`
+instead gets the native login/sign-up form (`app/native_login_window.rs` +
+`login/native.rs`), which speaks the bahamut-style JSON auth contract directly:
+`POST <api_url>/accounts` to register, `POST <api_url>/sessions` for the
+56-character hex session id that feeds the same launch pipeline. Plain-http
+`api_url`s are refused for non-loopback hosts so passwords never cross a network
+unencrypted.
 
 ### `patcher/` + `patch_format/` — patching
 

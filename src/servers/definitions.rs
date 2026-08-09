@@ -29,6 +29,12 @@ pub struct ServerDefinition {
     pub name: String,
     pub address: String,
     pub login_url: String,
+    /// Base URL of a bahamut-style JSON auth API (e.g.
+    /// `https://host/api/v1`) for servers with no web login page. When
+    /// `login_url` is empty and this is set, the launcher shows its native
+    /// login/sign-up form instead of the login webview.
+    #[serde(default)]
+    pub api_url: String,
 }
 
 /// Order-preserving: `iter()` yields entries in the order they appear in the
@@ -100,8 +106,10 @@ mod tests {
         let local = defs.get("Localhost").expect("Localhost present");
         assert_eq!(local.address, "127.0.0.1");
         assert_eq!(local.login_url, "http://127.0.0.1:54993/login");
+        // Bahamut (main) is deliberately first: file order is the dropdown
+        // order and the fresh-install default selection.
         let first = defs.iter().next().expect("at least one server");
-        assert_eq!(first.name, "Localhost");
+        assert_eq!(first.name, "Bahamut (main)");
 
         // Project Meteor's PHP login_su runs at 8080, not 54993 (which is
         // the Map Server's game-protocol TCP listener in that codebase).
@@ -150,6 +158,25 @@ login_url = "https://a/login"
         let defs = ServerDefinitions::parse(toml_text).unwrap();
         let names: Vec<&str> = defs.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["Zeta", "Alpha"]);
+    }
+
+    #[test]
+    fn bahamut_main_is_default_and_uses_the_native_json_login() {
+        let defs = ServerDefinitions::load_default().unwrap();
+        let entry = defs.get("Bahamut (main)").expect("Bahamut (main) present");
+        assert_eq!(entry.address, "bahamut.stegall.me");
+        // The bahamut auth service is a JSON API with no web login page:
+        // empty login_url plus an api_url routes the Login button to the
+        // native login/sign-up form. https because the client refuses to
+        // send passwords over plain http to non-loopback hosts.
+        assert_eq!(entry.login_url, "");
+        assert_eq!(entry.api_url, "https://bahamut.stegall.me/api/v1");
+    }
+
+    #[test]
+    fn api_url_defaults_to_empty_for_webview_servers() {
+        let defs = ServerDefinitions::load_default().unwrap();
+        assert_eq!(defs.get("Localhost").unwrap().api_url, "");
     }
 
     #[test]

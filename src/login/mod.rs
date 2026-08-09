@@ -27,8 +27,15 @@
 //! result on stdout. The egui parent process spawns this child and polls a
 //! channel for the outcome each frame, never blocking the UI.
 
+//!
+//! Servers without a web login page can instead expose a bahamut-style
+//! JSON auth API (`api_url` in the server definition); `native.rs` speaks
+//! it directly from an in-process login form — no webview involved.
+
+mod native;
 mod subprocess;
 mod webview;
 
+pub use native::{NativeAuthOutcome, NativeAuthTask};
 pub use subprocess::{LoginOutcome, LoginTask};
 pub use webview::{CANCEL_SENTINEL, ERROR_PREFIX, SESSION_PREFIX, run_webview};

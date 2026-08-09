@@ -45,7 +45,7 @@ pub fn servers_file_path() -> Result<PathBuf> {
 /// Path to the repo-bundled starter config (`./configs/garlemald-client.toml`
 /// next to the binary). Used as a fallback when the per-user preferences
 /// file doesn't exist yet — mirrors the server's `configs/*.toml` layout so
-/// a fresh clone picks up matching localhost defaults for lobby/world/map.
+/// a fresh clone starts on the public Bahamut (main) server.
 pub fn bundled_config_path() -> PathBuf {
     PathBuf::from("./configs/garlemald-client.toml")
 }

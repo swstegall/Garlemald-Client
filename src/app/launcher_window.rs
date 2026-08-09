@@ -23,6 +23,7 @@ use anyhow::Result;
 use eframe::egui;
 
 use crate::app::developer_window::{DeveloperModal, DeveloperOutcome, VERBOSE_WINE_DEBUG};
+use crate::app::native_login_window::{NativeLoginModal, NativeLoginOutcome};
 use crate::app::patcher_window::PatcherScreen;
 use crate::app::settings_window::{SettingsModal, SettingsOutcome};
 use crate::app::theme;
@@ -82,6 +83,7 @@ struct LauncherApp {
     settings_modal: Option<SettingsModal>,
     developer_modal: Option<DeveloperModal>,
     login_task: Option<LoginTask>,
+    native_login_modal: Option<NativeLoginModal>,
     outdated_prompt_open: bool,
     last_message: Option<(MessageKind, String)>,
     torrent: TorrentService,
@@ -163,6 +165,7 @@ impl LauncherApp {
             settings_modal: None,
             developer_modal: None,
             login_task: None,
+            native_login_modal: None,
             outdated_prompt_open: false,
             last_message: None,
             torrent,
@@ -194,6 +197,16 @@ impl LauncherApp {
             None
         } else {
             Some(def.login_url.clone())
+        }
+    }
+
+    fn resolved_api_url(&self) -> Option<String> {
+        let name = self.selected_server_name.as_ref()?;
+        let def = self.servers.get(name)?;
+        if def.api_url.is_empty() {
+            None
+        } else {
+            Some(def.api_url.clone())
         }
     }
 
@@ -503,7 +516,7 @@ impl LauncherApp {
             self.set_error(self.install_gate_message());
             return;
         }
-        if self.login_task.is_some() {
+        if self.login_task.is_some() || self.native_login_modal.is_some() {
             self.set_info("Login window already open.");
             return;
         }
@@ -516,8 +529,19 @@ impl LauncherApp {
             return;
         }
         let Some(login_url) = self.resolved_login_url() else {
+            // No login webview supplied: fall back to the native JSON
+            // login/sign-up form when the server exposes an auth API.
+            if let Some(api_url) = self.resolved_api_url() {
+                let server_name = self
+                    .selected_server_name
+                    .clone()
+                    .unwrap_or_else(|| "server".into());
+                self.save_preferences();
+                self.native_login_modal = Some(NativeLoginModal::new(server_name, api_url));
+                return;
+            }
             self.set_error(
-                "Selected server has no login URL. Use the developer session-id override.",
+                "Selected server has no login URL or auth API. Use the developer session-id override.",
             );
             return;
         };
@@ -680,7 +704,7 @@ impl LauncherApp {
             if ui.button("Install from Local Patches…").clicked() {
                 self.start_local_install();
             }
-            let login_in_flight = self.login_task.is_some();
+            let login_in_flight = self.login_task.is_some() || self.native_login_modal.is_some();
             let launch_button = egui::Button::new(if login_in_flight {
                 "Login in progress…"
             } else {
@@ -697,6 +721,7 @@ impl LauncherApp {
                     task.cancel();
                 }
                 self.login_task = None;
+                self.native_login_modal = None;
                 self.set_info("Login cancelled.");
             }
         });
@@ -791,6 +816,21 @@ impl LauncherApp {
             }
         }
 
+        if let Some(modal) = self.native_login_modal.as_mut() {
+            match modal.render(ctx) {
+                NativeLoginOutcome::Open => {}
+                NativeLoginOutcome::Cancelled => {
+                    self.native_login_modal = None;
+                    self.set_info("Login cancelled.");
+                }
+                NativeLoginOutcome::Success(session_id) => {
+                    self.native_login_modal = None;
+                    self.set_info("Login complete; launching game…");
+                    self.launch_game_with_session(session_id);
+                }
+            }
+        }
+
         self.render_outdated_prompt(ctx);
     }
 
@@ -843,7 +883,9 @@ impl eframe::App for LauncherApp {
         // still needs patching, kick off the apply without waiting for the
         // user to notice and click through. Mirrors bahamut-launcher's
         // maybeAutoChainPatch install gate.
-        let no_modal_open = self.settings_modal.is_none() && self.developer_modal.is_none();
+        let no_modal_open = self.settings_modal.is_none()
+            && self.developer_modal.is_none()
+            && self.native_login_modal.is_none();
         if on_main_screen
             && no_modal_open
             && !self.torrent_apply_attempted

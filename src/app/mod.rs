@@ -18,6 +18,7 @@
 
 mod developer_window;
 mod launcher_window;
+mod native_login_window;
 mod patcher_window;
 mod settings_window;
 mod theme;

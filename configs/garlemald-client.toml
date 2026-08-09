@@ -1,4 +1,4 @@
-# Garlemald launcher starter preferences (localhost defaults).
+# Garlemald launcher starter preferences.
 #
 # Read on first launch when no per-user preferences file exists yet
 # (platform-specific, e.g. ~/.config/garlemald-client/preferences.toml on
@@ -6,15 +6,16 @@
 # file at the platform path takes precedence and this file is no longer
 # consulted.
 #
-# The address below matches the sibling garlemald-server's localhost defaults
-# (lobby binds to 127.0.0.1:54994; world to :54992; map to :1989). The
-# Windows game client learns ports from hardcoded values; only the lobby
-# host gets patched into the PE binary at launch time, so only `server_*`
-# is surfaced here.
+# The default server is the public BahamutXIV server (the first entry in
+# src/servers/default_servers.toml). server_address is left empty so the
+# selected entry's address is used -- a non-empty value here becomes the
+# "Custom address" override, which takes precedence over the dropdown.
+# For the local garlemald-server dev loop, set server_name = "Localhost"
+# (its lobby binds to 127.0.0.1:54994; world to :54992; map to :1989).
 
 [launcher]
-server_name = "Localhost"
-server_address = "127.0.0.1"
+server_name = "Bahamut (main)"
+server_address = ""
 # game_location, wine_runtime_dir, patch_download_dir are left unset so the
 # platform auto-detection runs. Add them here if you want to hardcode the
 # paths (they will otherwise be filled in by the UI on first save).
